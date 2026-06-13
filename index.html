@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Iris Book Finder</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">IB</span>
+          <div>
+            <h1>Iris Book Finder</h1>
+            <p>ebooks + audiobooks</p>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Main navigation">
+          <button data-view="search" class="active">Search</button>
+          <button data-view="check">Check</button>
+          <button data-view="saved">Saved Books</button>
+          <button data-view="platforms">Platforms</button>
+          <button data-view="settings">Settings</button>
+        </nav>
+      </aside>
+
+      <main>
+        <section id="messages" class="messages" aria-live="polite"></section>
+
+        <section id="view-search" class="view active"></section>
+        <section id="view-check" class="view"></section>
+        <section id="view-saved" class="view"></section>
+        <section id="view-platforms" class="view"></section>
+        <section id="view-settings" class="view"></section>
+      </main>
+    </div>
+
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <button data-view="search" class="active">Search</button>
+      <button data-view="check">Check</button>
+      <button data-view="saved">Saved</button>
+      <button data-view="platforms">Platforms</button>
+      <button data-view="settings">Settings</button>
+    </nav>
+
+    <script src="app.js"></script>
+  </body>
+</html>
