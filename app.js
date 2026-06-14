@@ -147,7 +147,7 @@
     view: "search",
     books: [],
     platforms: migratePlatforms(read(KEYS.platforms, defaultPlatforms)),
-    settings: read(KEYS.settings, { troveApiKey: "", stripArticles: true }),
+    settings: read(KEYS.settings, { troveApiKey: "", stripArticles: true, troveDebug: false }),
     recent: read(KEYS.recent, []),
     activeBookId: null,
     selectedTroveBookId: null,
@@ -262,6 +262,10 @@
 
   function saveSettings() {
     write(KEYS.settings, state.settings);
+  }
+
+  function troveUrl(work) {
+    return work?.troveId ? `https://trove.nla.gov.au/work/${encodeURIComponent(work.troveId)}` : "https://trove.nla.gov.au/";
   }
 
   function saveRecent(query) {
@@ -431,9 +435,10 @@
     try {
       const data = await fetchTroveResults(query);
       state.troveResults = extractTroveWorks(data)
-        .map((work) => ({ ...work, ranking: rankTroveWork(work, query) }))
+        .map((work) => ({ ...work, ranking: rankTroveWork(work, query), troveInfo: extractTroveInfo(work.raw, work) }))
         .sort((a, b) => b.ranking.score - a.ranking.score)
         .slice(0, 12);
+      if (state.settings.troveDebug && state.troveResults[0]) console.log("[Trove result raw]", state.troveResults[0].raw || state.troveResults[0]);
       warning.innerHTML = state.troveResults.length ? "" : `No Trove results found. <button id="warning-manual-button">Enter manually</button>`;
       document.getElementById("warning-manual-button")?.addEventListener("click", () => handleManualEntry(query));
       renderTroveResults();
@@ -462,6 +467,25 @@
     return response.json();
   }
 
+  async function fetchTroveDetails(workId) {
+    if (!workId) throw new Error("Missing Trove work ID");
+    if (location.protocol !== "file:") {
+      const proxyUrl = new URL("/api/trove", location.origin);
+      proxyUrl.searchParams.set("workId", workId);
+      const response = await fetch(proxyUrl.toString());
+      if (!response.ok) throw new Error(`Trove detail proxy returned ${response.status}`);
+      return response.json();
+    }
+    const url = new URL(`https://api.trove.nla.gov.au/v3/work/${encodeURIComponent(workId)}`);
+    url.searchParams.set("encoding", "json");
+    url.searchParams.set("include", "holdings,links,versions");
+    url.searchParams.set("reclevel", "full");
+    url.searchParams.set("key", state.settings.troveApiKey);
+    const response = await fetch(url.toString());
+    if (!response.ok) throw new Error(`Trove detail returned ${response.status}`);
+    return response.json();
+  }
+
   function extractTroveWorks(data) {
     const works = [];
     const walk = (value) => {
@@ -478,6 +502,7 @@
           format: text(value.type || value.format),
           troveId: text(value.id),
           isbn,
+          raw: value,
         });
       }
       Object.values(value).forEach(walk);
@@ -490,6 +515,58 @@
     if (Array.isArray(value)) return value.map(text).filter(Boolean).join(", ");
     if (value && typeof value === "object") return text(value.value || value.name || value.title);
     return String(value || "");
+  }
+
+  function unique(values) {
+    return [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+  }
+
+  function extractTroveInfo(raw, fallback = {}) {
+    const links = [];
+    const holdings = [];
+    const isbns = [];
+    let sawHoldingShape = false;
+    const visit = (value, key = "") => {
+      if (!value) return;
+      if (Array.isArray(value)) {
+        value.forEach((item) => visit(item, key));
+        return;
+      }
+      if (typeof value !== "object") {
+        const stringValue = String(value);
+        if (/97[89][0-9 -]{10,}/.test(stringValue)) isbns.push(stringValue.match(/97[89][0-9 -]{10,}/)?.[0] || stringValue);
+        if (/^https?:\/\//i.test(stringValue)) links.push({ url: stringValue, type: key || "link" });
+        return;
+      }
+      const lowerKey = key.toLowerCase();
+      if (["holding", "holdings", "library", "libraries", "nuc"].some((part) => lowerKey.includes(part))) sawHoldingShape = true;
+      const url = text(value.url || value.href || value.link);
+      if (url && /^https?:\/\//i.test(url)) links.push({ url, type: text(value.linktype || value.linkType || value.type || value.access || value.accessType || key || "link") });
+      const maybeLibraryName = text(value.name || value.library || value.libraryName || value.fullname || value.fullName || value.nuc);
+      if (maybeLibraryName && ["holding", "holdings", "library", "libraries", "nuc"].some((part) => lowerKey.includes(part))) holdings.push(maybeLibraryName);
+      Object.entries(value).forEach(([childKey, childValue]) => visit(childValue, childKey));
+    };
+    visit(raw);
+    const onlineLinks = uniqueLinks(links).filter((link) => !link.url.includes("trove.nla.gov.au/work/"));
+    const accessText = onlineLinks.map((link) => `${link.type} ${link.url}`.toLowerCase()).join(" ");
+    const onlineAccess = accessText.includes("restricted") || accessText.includes("licence") || accessText.includes("license") ? "Restricted" : onlineLinks.length ? "Yes" : "Unknown";
+    return {
+      onlineAccess,
+      onlineLinks: onlineLinks.slice(0, 5),
+      holdingLibraries: unique(holdings).slice(0, 6),
+      holdingsLoaded: sawHoldingShape,
+      isbn: unique([fallback.isbn, ...isbns])[0] || "",
+      troveLink: troveUrl(fallback),
+    };
+  }
+
+  function uniqueLinks(links) {
+    const seen = new Set();
+    return links.filter((link) => {
+      if (!link.url || seen.has(link.url)) return false;
+      seen.add(link.url);
+      return true;
+    });
   }
 
   function normalize(value) {
@@ -554,7 +631,6 @@
 
   function troveCardHtml(work) {
     const book = state.books.find((item) => item.id === state.selectedTroveBookId && item.troveId === work.troveId);
-    const troveUrl = work.troveId ? `https://trove.nla.gov.au/work/${encodeURIComponent(work.troveId)}` : "https://trove.nla.gov.au/";
     return `
       <article class="trove-card ${work.ranking.label === "Probably unrelated" ? "unrelated" : ""}" data-id="${escapeHtml(work.troveId)}">
         <div class="between">
@@ -569,13 +645,37 @@
           ${work.troveId ? `<span class="tag">Trove ${escapeHtml(work.troveId)}</span>` : ""}
         </div>
         <p class="muted">${escapeHtml(work.ranking.reason)}</p>
+        ${troveInfoHtml(work)}
         <div class="row">
           <button class="primary" data-use-trove>Use this book</button>
-          <a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(troveUrl)}">Open Trove</a>
+          <a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(troveUrl(work))}">Open Trove</a>
+          <button data-load-trove-details ${work.detailsLoading ? "disabled" : ""}>${work.detailsLoading ? "Loading Trove details..." : work.detailsLoaded ? "Reload Trove details" : "Load Trove details"}</button>
           <button data-mark-unrelated>Mark unrelated</button>
         </div>
         ${book ? manualPanelHtml(book, "search") : ""}
       </article>
+    `;
+  }
+
+  function troveInfoHtml(work) {
+    const info = work.troveInfo || extractTroveInfo(work.raw, work);
+    return `
+      <section class="trove-info">
+        <h4>Trove info</h4>
+        <dl>
+          <div><dt>Online access</dt><dd>${escapeHtml(info.onlineAccess || "Unknown")}</dd></div>
+          <div><dt>Holding libraries</dt><dd>${info.holdingLibraries.length ? escapeHtml(info.holdingLibraries.join(", ")) : "Trove holdings not loaded. Use Open Trove for library details."}</dd></div>
+          <div><dt>ISBN</dt><dd>${escapeHtml(info.isbn || "Unknown")}</dd></div>
+          <div><dt>Trove link</dt><dd><a target="_blank" rel="noreferrer" href="${escapeHtml(info.troveLink || troveUrl(work))}">Open Trove</a></dd></div>
+        </dl>
+        ${
+          info.onlineLinks.length
+            ? `<div class="chips">${info.onlineLinks.map((link) => `<a class="tag" target="_blank" rel="noreferrer" href="${escapeHtml(link.url)}">${escapeHtml(link.type || "Online link")}</a>`).join("")}</div>`
+            : ""
+        }
+        ${work.detailsError ? `<p class="muted">Trove details could not be loaded. Use Open Trove for library details.</p>` : ""}
+        <p class="muted small-warning">Trove holdings are metadata/library records only. Availability on Libby, Hoopla, BorrowBox, and Audible must still be checked manually.</p>
+      </section>
     `;
   }
 
@@ -592,8 +692,28 @@
         work.ranking = { score: 0, label: "Probably unrelated", reason: "Marked unrelated by you." };
         renderTroveResults();
       });
+      card.querySelector("[data-load-trove-details]")?.addEventListener("click", () => loadTroveDetails(work));
     });
     bindManualPanels();
+  }
+
+  async function loadTroveDetails(work) {
+    if (!work) return;
+    work.detailsError = "";
+    work.detailsLoading = true;
+    renderTroveResults();
+    try {
+      const detail = await fetchTroveDetails(work.troveId);
+      if (state.settings.troveDebug) console.log("[Trove result raw]", detail);
+      work.detailRaw = detail;
+      work.detailsLoaded = true;
+      work.troveInfo = extractTroveInfo(detail, work);
+    } catch {
+      work.detailsError = "Trove holdings not loaded";
+    } finally {
+      work.detailsLoading = false;
+      renderTroveResults();
+    }
   }
 
   function showBookForm(seed = {}, existingBook = null) {
@@ -1099,6 +1219,7 @@
           </label>
           <p class="muted">On Vercel, keep the real Trove key in the TROVE_API_KEY environment variable. The browser calls /api/trove, so the deployed key is not exposed in the page.</p>
           <label class="row"><input id="strip-articles" type="checkbox" ${state.settings.stripArticles ? "checked" : ""} /> Strip leading The/A/An from generated searches</label>
+          <label class="row"><input id="trove-debug" type="checkbox" ${state.settings.troveDebug ? "checked" : ""} /> Log raw Trove result objects in the console</label>
           <div class="row">
             <button id="save-settings" class="primary">Save settings</button>
             <button id="test-key">Test key</button>
@@ -1114,6 +1235,7 @@
     document.getElementById("save-settings").addEventListener("click", () => {
       state.settings.troveApiKey = value("trove-key").trim();
       state.settings.stripArticles = document.getElementById("strip-articles").checked;
+      state.settings.troveDebug = document.getElementById("trove-debug").checked;
       saveSettings();
       notify("Settings saved", "good");
       renderSettings();
