@@ -8,28 +8,20 @@
     recent: "iris_recent_searches",
   };
 
+  const oldLibbyIds = new Set(["boobook", "monash", "melbourne", "maribyrnong", "yarra", "melton", "greater-dandenong", "greater_dandenong"]);
   const defaultPlatforms = [
     {
-      id: "boobook",
-      name: "Boobook Audio",
-      searchUrlTemplate: "https://www.boobook.com.au/search?q={title}",
+      id: "libby",
+      name: "Libby",
+      searchUrlTemplate: "https://libbyapp.com/search?query={title}+{author}",
       isbnUrlTemplate: "",
-      fallbackUrl: "https://www.boobook.com.au/",
+      fallbackUrl: "https://libbyapp.com/",
       enabled: true,
-      note: "",
-    },
-    {
-      id: "monash",
-      name: "Monash Public Library Service",
-      searchUrlTemplate: "https://monlibvic.overdrive.com/search?query={title}+{author}",
-      isbnUrlTemplate: "",
-      fallbackUrl: "https://monlibvic.overdrive.com/",
-      enabled: true,
-      note: "Monash Public Library Service Libby/OverDrive collection.",
+      note: "Uses the user's logged-in Libby account and all added libraries.",
     },
     {
       id: "hoopla",
-      name: "Hoopla AU",
+      name: "Hoopla",
       searchUrlTemplate: "https://www.hoopladigital.com/search?q={title}+{author}",
       isbnUrlTemplate: "",
       fallbackUrl: "https://www.hoopladigital.com/",
@@ -72,11 +64,31 @@
       enabled: true,
       note: "Metadata/search only; not counted in manual checking progress.",
     },
+  ];
+
+  const disabledLegacyPlatforms = [
+    {
+      id: "boobook",
+      name: "Boobook Audio",
+      searchUrlTemplate: "https://www.boobook.com.au/search?q={title}",
+      isbnUrlTemplate: "",
+      fallbackUrl: "https://www.boobook.com.au/",
+      enabled: false,
+      note: "Legacy individual library link. Use Libby for the active manual workflow.",
+    },
+    {
+      id: "monash",
+      name: "Monash Public Library Service",
+      searchUrlTemplate: "https://monlibvic.overdrive.com/search?query={title}+{author}",
+      isbnUrlTemplate: "",
+      fallbackUrl: "https://monlibvic.overdrive.com/",
+      enabled: false,
+      note: "Legacy individual Libby/OverDrive library. Use Libby for the active manual workflow.",
+    },
     {
       id: "melbourne",
       name: "City of Melbourne Libraries",
-      searchUrlTemplate:
-        "https://libcat.melbourne.vic.gov.au/cgi-bin/spydus.exe/ENQ/WPAC/BIBENQ?ENTRY={title}+{author}&ENTRY_TYPE=K",
+      searchUrlTemplate: "https://libcat.melbourne.vic.gov.au/cgi-bin/spydus.exe/ENQ/WPAC/BIBENQ?ENTRY={title}+{author}&ENTRY_TYPE=K",
       isbnUrlTemplate: "",
       fallbackUrl: "https://librarysearch.melbourne.vic.gov.au/",
       enabled: false,
@@ -84,32 +96,68 @@
     },
   ];
 
-  const statusOptions = [
-    { key: "audio", label: "Audio", status: "available", format: "audio" },
-    { key: "ebook", label: "Ebook", status: "available", format: "ebook" },
-    { key: "both", label: "Both", status: "available", format: "both" },
-    { key: "hold", label: "Hold", status: "hold", format: null },
-    { key: "unavailable", label: "Unavailable", status: "unavailable", format: null },
-    { key: "skipped", label: "Skip", status: "skipped", format: null },
+  const bestSourceOptions = [
+    "Unknown",
+    "Libby audio",
+    "Libby ebook",
+    "Libby hold",
+    "Hoopla audio",
+    "Hoopla ebook",
+    "BorrowBox audio",
+    "BorrowBox ebook",
+    "BorrowBox hold",
+    "Audible AU",
+    "Skip",
   ];
+
+  const manualActions = {
+    libby: [
+      ["Audio", "libby_audio_available", "available", "audio"],
+      ["Ebook", "libby_ebook_available", "available", "ebook"],
+      ["Hold", "libby_hold", "hold", null],
+      ["Not found", "not_found", "unavailable", null],
+      ["Checked", "checked", "checked", null],
+    ],
+    hoopla: [
+      ["Audio", "hoopla_audio_available", "available", "audio"],
+      ["Ebook", "hoopla_ebook_available", "available", "ebook"],
+      ["Not found", "not_found", "unavailable", null],
+      ["Checked", "checked", "checked", null],
+    ],
+    borrowbox: [
+      ["Audio", "borrowbox_audio_available", "available", "audio"],
+      ["Ebook", "borrowbox_ebook_available", "available", "ebook"],
+      ["Hold", "borrowbox_hold", "hold", null],
+      ["Not found", "not_found", "unavailable", null],
+      ["Checked", "checked", "checked", null],
+    ],
+    audible: [
+      ["Fallback", "audible_fallback", "available", "audio"],
+      ["Audible only", "audible_only", "available", "audio"],
+      ["Not worth credit", "not_worth_credit", "skipped", null],
+      ["Checked", "checked", "checked", null],
+    ],
+    goodreads: [
+      ["Metadata checked", "metadata_checked", "checked", null],
+      ["Checked", "checked", "checked", null],
+    ],
+  };
 
   const state = {
     view: "search",
-    books: read(KEYS.books, []),
+    books: [],
     platforms: migratePlatforms(read(KEYS.platforms, defaultPlatforms)),
     settings: read(KEYS.settings, { troveApiKey: "", stripArticles: true }),
     recent: read(KEYS.recent, []),
     activeBookId: null,
+    selectedTroveBookId: null,
     troveResults: [],
+    showUnrelated: false,
     editingPlatformId: null,
     selectedBooks: new Set(),
-    savedFilters: {
-      quick: "All",
-      format: "Any",
-      text: "",
-      sort: "dateAdded",
-    },
+    savedFilters: { quick: "All", format: "Any", text: "", sort: "dateAdded" },
   };
+  state.books = migrateBooks(read(KEYS.books, []));
 
   const views = {
     search: document.getElementById("view-search"),
@@ -133,32 +181,59 @@
     localStorage.setItem(key, JSON.stringify(value));
   }
 
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
   function migratePlatforms(platforms) {
-    const byId = new Map((Array.isArray(platforms) ? platforms : []).map((platform) => [platform.id, platform]));
-    const migrated = defaultPlatforms.map((defaultPlatform) => {
-      const existing = byId.get(defaultPlatform.id);
-      if (!existing) return { ...defaultPlatform };
-      const merged = { ...defaultPlatform, ...existing };
-      if (defaultPlatform.id === "melbourne") {
-        merged.name = defaultPlatform.name;
-        merged.searchUrlTemplate = defaultPlatform.searchUrlTemplate;
-        merged.fallbackUrl = defaultPlatform.fallbackUrl;
-        merged.enabled = false;
-        merged.note = defaultPlatform.note;
-      }
-      if (defaultPlatform.id === "monash") {
-        merged.name = defaultPlatform.name;
-        merged.searchUrlTemplate = defaultPlatform.searchUrlTemplate;
-        merged.fallbackUrl = defaultPlatform.fallbackUrl;
-        merged.enabled = true;
-        merged.note = defaultPlatform.note;
-      }
-      return merged;
+    const existing = new Map((Array.isArray(platforms) ? platforms : []).map((platform) => [platform.id, platform]));
+    const migrated = defaultPlatforms.map((platform) => {
+      const saved = existing.get(platform.id);
+      return { ...platform, ...(saved || {}), enabled: saved ? Boolean(saved.enabled) : platform.enabled };
     });
-    byId.forEach((platform, id) => {
-      if (!defaultPlatforms.some((defaultPlatform) => defaultPlatform.id === id)) migrated.push(platform);
+    const legacy = disabledLegacyPlatforms.map((platform) => {
+      const saved = existing.get(platform.id);
+      return { ...platform, ...(saved || {}), enabled: saved ? Boolean(saved.enabled) : false };
     });
-    return migrated;
+    existing.forEach((platform, id) => {
+      const isKnown = defaultPlatforms.some((item) => item.id === id) || disabledLegacyPlatforms.some((item) => item.id === id);
+      if (!isKnown) migrated.push(looksLikeSpecificLibbyLibrary(platform) ? disableLegacyLibbyPlatform(platform) : platform);
+    });
+    return [...migrated, ...legacy];
+  }
+
+  function looksLikeSpecificLibbyLibrary(platform) {
+    const haystack = [platform.id, platform.name, platform.searchUrlTemplate, platform.fallbackUrl, platform.note].join(" ").toLowerCase();
+    if (platform.id === "libby") return false;
+    return (
+      haystack.includes("overdrive.com") ||
+      haystack.includes("libby/overdrive") ||
+      haystack.includes("maribyrnong") ||
+      haystack.includes("yarra") ||
+      haystack.includes("melton") ||
+      haystack.includes("greater dandenong")
+    );
+  }
+
+  function disableLegacyLibbyPlatform(platform) {
+    return {
+      ...platform,
+      enabled: false,
+      note: platform.note || "Disabled by default: replaced by the single Libby platform in the active workflow.",
+    };
+  }
+
+  function migrateBooks(books) {
+    return (Array.isArray(books) ? books : []).map((book) => {
+      const copy = { ...book, platformResults: { ...(book.platformResults || {}) } };
+      if (!copy.bestSource) copy.bestSource = "Unknown";
+      if (!copy.platformResults.libby) {
+        const oldResult = [...oldLibbyIds].map((id) => copy.platformResults[id]).find((result) => result && result.status);
+        copy.platformResults.libby = oldResult ? { ...oldResult, note: [oldResult.note, "Migrated from old individual Libby library check."].filter(Boolean).join(" ") } : blankResult();
+      }
+      ensurePlatformResults(copy);
+      return copy;
+    });
   }
 
   function uid() {
@@ -199,9 +274,7 @@
   function setView(view) {
     state.view = view;
     Object.entries(views).forEach(([key, el]) => el.classList.toggle("active", key === view));
-    document.querySelectorAll("[data-view]").forEach((button) => {
-      button.classList.toggle("active", button.dataset.view === view);
-    });
+    document.querySelectorAll("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
     notify("");
     render();
   }
@@ -211,7 +284,15 @@
   }
 
   function manualCheckPlatforms() {
-    return enabledPlatforms().filter((platform) => platform.id !== "trove");
+    return ["libby", "hoopla", "borrowbox", "audible", "goodreads"]
+      .map((id) => state.platforms.find((platform) => platform.id === id && platform.enabled))
+      .filter(Boolean);
+  }
+
+  function libraryPlatforms() {
+    return ["libby", "hoopla", "borrowbox"]
+      .map((id) => state.platforms.find((platform) => platform.id === id && platform.enabled))
+      .filter(Boolean);
   }
 
   function stripArticles(title) {
@@ -226,22 +307,24 @@
   function platformUrl(platform, book) {
     const hasIsbn = Boolean(book.isbn);
     const template = hasIsbn && platform.isbnUrlTemplate ? platform.isbnUrlTemplate : platform.searchUrlTemplate;
-    const fallbackTemplate =
-      platform.id === "goodreads" && !hasIsbn
-        ? "https://www.goodreads.com/search?q={title}+{author}"
-        : template;
-    return fallbackTemplate
+    const fallbackTemplate = platform.id === "goodreads" && !hasIsbn ? "https://www.goodreads.com/search?q={title}+{author}" : template;
+    return (fallbackTemplate || platform.fallbackUrl)
       .replaceAll("{title}", encodePart(stripArticles(book.title)))
       .replaceAll("{author}", encodePart(book.author))
       .replaceAll("{isbn}", encodePart(book.isbn));
   }
 
+  function queryText(book) {
+    return [stripArticles(book.title), book.author].filter(Boolean).join(" ");
+  }
+
   function blankResult() {
-    return { status: null, format: null, note: "", checkedAt: "" };
+    return { status: null, format: null, statusValue: "", note: "", checkedAt: "" };
   }
 
   function ensurePlatformResults(book) {
     book.platformResults = book.platformResults || {};
+    if (!book.bestSource) book.bestSource = "Unknown";
     state.platforms.forEach((platform) => {
       book.platformResults[platform.id] = book.platformResults[platform.id] || blankResult();
     });
@@ -256,6 +339,7 @@
     if (!result || !result.status) return "";
     if (result.status === "hold") return "hold";
     if (result.status === "available") return "available";
+    if (result.status === "checked") return "checked";
     return result.status;
   }
 
@@ -285,21 +369,16 @@
         <section id="book-form-panel" class="panel stack" hidden></section>
       </div>
     `;
-
     const input = document.getElementById("search-input");
     const recent = document.getElementById("recent-searches");
     const generatedLinks = document.getElementById("generated-search-links");
-    recent.innerHTML = state.recent
-      .map((item) => `<button class="pill recent-chip" data-query="${escapeHtml(item)}">${escapeHtml(item)}</button>`)
-      .join("");
-
+    recent.innerHTML = state.recent.map((item) => `<button class="pill recent-chip" data-query="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join("");
     document.querySelectorAll(".recent-chip").forEach((button) => {
       button.addEventListener("click", () => {
         input.value = button.dataset.query;
         doSearch(input.value);
       });
     });
-
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") doSearch(input.value);
     });
@@ -317,23 +396,12 @@
     }
     const draft = { title: query, author: "", isbn: "" };
     container.innerHTML = enabledPlatforms()
-      .map((platform) => {
-        return `<a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, draft))}">Open ${escapeHtml(linkLabel(platform))}</a>`;
-      })
+      .map((platform) => `<a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, draft))}">Open ${escapeHtml(linkLabel(platform))}</a>`)
       .join("");
   }
 
   function linkLabel(platform) {
-    const labels = {
-      boobook: "Boobook",
-      monash: "Monash",
-      hoopla: "Hoopla",
-      borrowbox: "BorrowBox",
-      audible: "Audible AU",
-      goodreads: "Goodreads",
-      trove: "Trove",
-      melbourne: "Melbourne",
-    };
+    const labels = { libby: "Libby", hoopla: "Hoopla", borrowbox: "BorrowBox", audible: "Audible AU", goodreads: "Goodreads", trove: "Trove" };
     return labels[platform.id] || platform.name;
   }
 
@@ -344,50 +412,34 @@
 
   async function doSearch(query) {
     query = query.trim();
-    if (!query) {
-      notify("Enter a title or author to search", "warn");
-      return;
-    }
     saveRecent(query);
     const warning = document.getElementById("trove-warning");
     const resultsEl = document.getElementById("trove-results");
     resultsEl.innerHTML = "";
-    if (!state.settings.troveApiKey && location.protocol === "file:") {
-      warning.innerHTML = `
-        Trove search unavailable — you can still enter the book manually.
-        <button id="warning-manual-button">Enter manually</button>
-      `;
+    renderGeneratedSearchLinks(query, document.getElementById("generated-search-links"));
+    if (!query) {
+      warning.innerHTML = `Trove search unavailable — you can still enter the book manually. <button id="warning-manual-button">Enter manually</button>`;
       document.getElementById("warning-manual-button").addEventListener("click", () => handleManualEntry(query));
-      showBookForm({ title: query });
+      return;
+    }
+    if (!state.settings.troveApiKey && location.protocol === "file:") {
+      warning.innerHTML = `Trove search unavailable — you can still enter the book manually. <button id="warning-manual-button">Enter manually</button>`;
+      document.getElementById("warning-manual-button").addEventListener("click", () => handleManualEntry(query));
       return;
     }
     warning.textContent = "Searching Trove...";
     try {
       const data = await fetchTroveResults(query);
-      state.troveResults = extractTroveWorks(data).slice(0, 5);
-      warning.innerHTML = state.troveResults.length
-        ? ""
-        : `No Trove results found. <button id="warning-manual-button">Enter manually</button>`;
+      state.troveResults = extractTroveWorks(data)
+        .map((work) => ({ ...work, ranking: rankTroveWork(work, query) }))
+        .sort((a, b) => b.ranking.score - a.ranking.score)
+        .slice(0, 12);
+      warning.innerHTML = state.troveResults.length ? "" : `No Trove results found. <button id="warning-manual-button">Enter manually</button>`;
       document.getElementById("warning-manual-button")?.addEventListener("click", () => handleManualEntry(query));
-      resultsEl.innerHTML = `
-        <h2>Trove results</h2>
-        <div class="cards">
-          ${state.troveResults.map(troveCardHtml).join("")}
-        </div>
-      `;
-      document.querySelectorAll(".trove-card").forEach((card) => {
-        card.addEventListener("click", () => {
-          const work = state.troveResults.find((item) => item.troveId === card.dataset.id);
-          showBookForm(work || {});
-        });
-      });
+      renderTroveResults();
     } catch {
-      warning.innerHTML = `
-        Trove search unavailable — you can still enter the book manually.
-        <button id="warning-manual-button">Enter manually</button>
-      `;
+      warning.innerHTML = `Trove search unavailable — you can still enter the book manually. <button id="warning-manual-button">Enter manually</button>`;
       document.getElementById("warning-manual-button").addEventListener("click", () => handleManualEntry(query));
-      showBookForm({ title: query });
     }
   }
 
@@ -399,12 +451,11 @@
       if (!response.ok) throw new Error(`Trove proxy returned ${response.status}`);
       return response.json();
     }
-
     const url = new URL("https://api.trove.nla.gov.au/v3/result");
     url.searchParams.set("q", query);
     url.searchParams.set("category", "book");
     url.searchParams.set("encoding", "json");
-    url.searchParams.set("n", "5");
+    url.searchParams.set("n", "12");
     url.searchParams.set("key", state.settings.troveApiKey);
     const response = await fetch(url.toString());
     if (!response.ok) throw new Error(`Trove returned ${response.status}`);
@@ -414,7 +465,7 @@
   function extractTroveWorks(data) {
     const works = [];
     const walk = (value) => {
-      if (!value || works.length >= 5) return;
+      if (!value || works.length >= 20) return;
       if (Array.isArray(value)) return value.forEach(walk);
       if (typeof value !== "object") return;
       if (value.title || value.id) {
@@ -441,17 +492,108 @@
     return String(value || "");
   }
 
+  function normalize(value) {
+    return String(value || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function rankTroveWork(work, query) {
+    const q = normalize(query);
+    const title = normalize(work.title);
+    const author = normalize(work.author);
+    const combined = `${title} ${author}`;
+    const tokens = q.split(" ").filter((token) => token.length > 2);
+    let score = 0;
+    let reason = "Weak text overlap with the search.";
+    if (author.includes(q)) {
+      score += 90;
+      reason = "Author closely matches the search.";
+    }
+    if (title.includes(q)) {
+      score += 75;
+      reason = "Title closely matches the search.";
+    }
+    const tokenHits = tokens.filter((token) => combined.includes(token)).length;
+    score += tokenHits * 18;
+    if (tokenHits >= 2 && score < 70) reason = "Some title or author words match.";
+    if (q === "eden finley" && !author.includes("eden finley")) {
+      const placeLike = title.includes("eden") && title.includes("finley");
+      if (placeLike || combined.includes("finley") || combined.includes("eden")) {
+        score = Math.min(score, 20);
+        reason = "Looks like a place-name or catalogue false positive, not the author Eden Finley.";
+      }
+    }
+    if (title.includes("one night with rhodes") || author.includes("eden finley")) {
+      score = Math.max(score, 95);
+      reason = "Likely match: title/author lines up with Eden Finley.";
+    }
+    const label = score >= 70 ? "Likely match" : score >= 40 ? "Possible match" : "Probably unrelated";
+    return { score, label, reason };
+  }
+
+  function renderTroveResults() {
+    const resultsEl = document.getElementById("trove-results");
+    const visible = state.showUnrelated ? state.troveResults : state.troveResults.filter((work) => work.ranking.label !== "Probably unrelated");
+    resultsEl.innerHTML = `
+      <section class="panel stack">
+        <div class="between">
+          <div>
+            <h2>Trove results</h2>
+            <p class="muted">Trove finds book metadata only. Use a result to generate platform links, then manually check Libby, Hoopla, BorrowBox, Audible, and Goodreads.</p>
+          </div>
+          <label class="row compact"><input id="show-unrelated" type="checkbox" ${state.showUnrelated ? "checked" : ""} /> Show unrelated Trove results</label>
+        </div>
+      </section>
+      <div class="cards trove-results">${visible.map(troveCardHtml).join("") || `<div class="empty">Only unrelated Trove results were hidden.</div>`}</div>
+    `;
+    document.getElementById("show-unrelated")?.addEventListener("change", (event) => {
+      state.showUnrelated = event.target.checked;
+      renderTroveResults();
+    });
+    bindTroveControls();
+  }
+
   function troveCardHtml(work) {
+    const book = state.books.find((item) => item.id === state.selectedTroveBookId && item.troveId === work.troveId);
+    const troveUrl = work.troveId ? `https://trove.nla.gov.au/work/${encodeURIComponent(work.troveId)}` : "https://trove.nla.gov.au/";
     return `
-      <article class="trove-card" data-id="${escapeHtml(work.troveId)}">
-        <h3>${escapeHtml(work.title || "Untitled")}</h3>
-        <p class="muted">${escapeHtml([work.author, work.year].filter(Boolean).join(" - "))}</p>
+      <article class="trove-card ${work.ranking.label === "Probably unrelated" ? "unrelated" : ""}" data-id="${escapeHtml(work.troveId)}">
+        <div class="between">
+          <div>
+            <h3>${escapeHtml(work.title || "Untitled")}</h3>
+            <p class="muted">${escapeHtml([work.author, work.year].filter(Boolean).join(" - "))}</p>
+          </div>
+          <span class="match-badge">${escapeHtml(work.ranking.label)}</span>
+        </div>
         <div class="chips">
           ${(work.format || "Book").split(",").map((item) => `<span class="tag">${escapeHtml(item.trim())}</span>`).join("")}
           ${work.troveId ? `<span class="tag">Trove ${escapeHtml(work.troveId)}</span>` : ""}
         </div>
+        <p class="muted">${escapeHtml(work.ranking.reason)}</p>
+        <div class="row">
+          <button class="primary" data-use-trove>Use this book</button>
+          <a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(troveUrl)}">Open Trove</a>
+          <button data-mark-unrelated>Mark unrelated</button>
+        </div>
+        ${book ? manualPanelHtml(book, "search") : ""}
       </article>
     `;
+  }
+
+  function bindTroveControls() {
+    document.querySelectorAll(".trove-card").forEach((card) => {
+      const work = state.troveResults.find((item) => item.troveId === card.dataset.id);
+      card.querySelector("[data-use-trove]")?.addEventListener("click", () => {
+        const book = createBookFromSeed(work);
+        state.selectedTroveBookId = book.id;
+        saveBooks();
+        renderTroveResults();
+      });
+      card.querySelector("[data-mark-unrelated]")?.addEventListener("click", () => {
+        work.ranking = { score: 0, label: "Probably unrelated", reason: "Marked unrelated by you." };
+        renderTroveResults();
+      });
+    });
+    bindManualPanels();
   }
 
   function showBookForm(seed = {}, existingBook = null) {
@@ -459,7 +601,7 @@
     const panel = document.getElementById("book-form-panel");
     panel.hidden = false;
     panel.innerHTML = `
-      <h2>New Book</h2>
+      <h2>${existingBook ? "Edit Book" : "New Book"}</h2>
       <p id="book-form-error" class="message warn" hidden></p>
       <div class="grid">
         ${field("book-title", "Title", seed.title || "", true)}
@@ -479,53 +621,68 @@
     document.getElementById("cancel-book-form").addEventListener("click", () => {
       panel.hidden = true;
     });
-    document.getElementById("save-new-book").addEventListener("click", () => {
-      const title = value("book-title").trim();
-      if (!title) {
-        const error = document.getElementById("book-form-error");
-        error.textContent = "Title is required.";
-        error.hidden = false;
-        notify("Title is required", "warn");
-        return;
-      }
-      if (existingBook) {
-        existingBook.title = title;
-        existingBook.author = value("book-author");
-        existingBook.narrator = value("book-narrator");
-        existingBook.series = value("book-series");
-        existingBook.seriesNumber = Number(value("book-series-number")) || null;
-        existingBook.isbn = value("book-isbn");
-        existingBook.tags = value("book-tags").split(",").map((tag) => tag.trim()).filter(Boolean);
-        existingBook.notes = value("book-notes");
-        existingBook.dateUpdated = new Date().toISOString();
-        ensurePlatformResults(existingBook);
-        saveBooks();
-        state.activeBookId = existingBook.id;
-        setView("check");
-        return;
-      }
-      const book = {
-        id: uid(),
-        title,
-        author: value("book-author"),
-        narrator: value("book-narrator"),
-        series: value("book-series"),
-        seriesNumber: Number(value("book-series-number")) || null,
-        isbn: value("book-isbn"),
-        troveId: seed.troveId || "",
-        tags: value("book-tags").split(",").map((tag) => tag.trim()).filter(Boolean),
-        notes: value("book-notes"),
-        dateAdded: new Date().toISOString(),
-        dateUpdated: new Date().toISOString(),
-        platformResults: {},
-      };
-      ensurePlatformResults(book);
-      state.books.unshift(book);
-      saveBooks();
-      console.log("[Manual Entry] saved book", book);
-      state.activeBookId = book.id;
-      setView("check");
+    document.getElementById("save-new-book").addEventListener("click", () => saveBookForm(seed, existingBook));
+  }
+
+  function saveBookForm(seed, existingBook) {
+    const title = value("book-title").trim();
+    if (!title) {
+      const error = document.getElementById("book-form-error");
+      error.textContent = "Title is required.";
+      error.hidden = false;
+      notify("Title is required", "warn");
+      return;
+    }
+    const target = existingBook || {
+      id: uid(),
+      dateAdded: new Date().toISOString(),
+      platformResults: {},
+    };
+    Object.assign(target, {
+      title,
+      author: value("book-author"),
+      narrator: value("book-narrator"),
+      series: value("book-series"),
+      seriesNumber: Number(value("book-series-number")) || null,
+      isbn: value("book-isbn"),
+      troveId: seed.troveId || target.troveId || "",
+      tags: value("book-tags").split(",").map((tag) => tag.trim()).filter(Boolean),
+      notes: value("book-notes"),
+      dateUpdated: new Date().toISOString(),
     });
+    ensurePlatformResults(target);
+    if (!existingBook) state.books.unshift(target);
+    saveBooks();
+    console.log("[Manual Entry] saved book", target);
+    state.activeBookId = target.id;
+    setView("check");
+  }
+
+  function createBookFromSeed(seed = {}) {
+    const existing = state.books.find((book) => book.troveId && book.troveId === seed.troveId);
+    if (existing) {
+      ensurePlatformResults(existing);
+      return existing;
+    }
+    const book = {
+      id: uid(),
+      title: seed.title || "Untitled",
+      author: seed.author || "",
+      narrator: "",
+      series: "",
+      seriesNumber: null,
+      isbn: seed.isbn || "",
+      troveId: seed.troveId || "",
+      tags: [],
+      notes: "",
+      bestSource: "Unknown",
+      dateAdded: new Date().toISOString(),
+      dateUpdated: new Date().toISOString(),
+      platformResults: {},
+    };
+    ensurePlatformResults(book);
+    state.books.unshift(book);
+    return book;
   }
 
   function field(id, label, val = "", required = false, type = "text") {
@@ -544,22 +701,18 @@
     }
     state.activeBookId = book.id;
     ensurePlatformResults(book);
-    const platforms = manualCheckPlatforms();
     views.check.innerHTML = `
       <div class="stack">
         <section class="panel stack">
           <div class="between">
             <div>
               <h2>${escapeHtml(book.title)}</h2>
-              <p class="muted">${escapeHtml([book.author, book.series && `${book.series}${book.seriesNumber ? ` #${book.seriesNumber}` : ""}`, book.isbn && `ISBN ${book.isbn}`].filter(Boolean).join(" - "))}</p>
+              <p class="muted">${escapeHtml(bookMeta(book))}</p>
             </div>
             <button id="edit-book">Edit</button>
           </div>
-          <strong>${checkedCount(book)} / ${platforms.length} platforms checked</strong>
         </section>
-        <section class="stack">
-          ${platforms.map((platform) => checkRowHtml(book, platform)).join("")}
-        </section>
+        ${manualPanelHtml(book, "check")}
         <section class="panel row">
           <button id="go-saved" class="primary">Save & go to Saved Books</button>
           <button id="clear-checks" class="danger">Clear all checks</button>
@@ -571,64 +724,147 @@
     document.getElementById("clear-checks").addEventListener("click", () => {
       if (!confirm("Clear all platform checks for this book?")) return;
       Object.keys(book.platformResults).forEach((id) => (book.platformResults[id] = blankResult()));
+      book.bestSource = "Unknown";
       book.dateUpdated = new Date().toISOString();
       saveBooks();
       renderCheck();
     });
-    bindCheckRows(book);
+    bindManualPanels();
+  }
+
+  function bookMeta(book) {
+    return [book.author, book.narrator && `Narrated by ${book.narrator}`, book.series && `${book.series}${book.seriesNumber ? ` #${book.seriesNumber}` : ""}`, book.isbn && `ISBN ${book.isbn}`]
+      .filter(Boolean)
+      .join(" - ");
+  }
+
+  function manualPanelHtml(book, context) {
+    ensurePlatformResults(book);
+    const platforms = manualCheckPlatforms();
+    return `
+      <section class="panel manual-panel" data-book="${book.id}" data-context="${context}">
+        <div class="between manual-head">
+          <div>
+            <h2>Manual Check Panel</h2>
+            <p class="progress-badge">Checked ${checkedCount(book)} / ${platforms.length}</p>
+            <p class="muted small-warning">Your browser may block multiple tabs. If that happens, use Open next unchecked instead.</p>
+          </div>
+          <label class="field best-source">
+            <span>Best source</span>
+            <select data-best-source>
+              ${bestSourceOptions.map((option) => `<option ${book.bestSource === option ? "selected" : ""}>${option}</option>`).join("")}
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <button class="primary" data-open-next>Open next unchecked</button>
+          <button data-open-all>Open all unchecked</button>
+          <button data-open-libraries>Open library links only</button>
+        </div>
+        <div class="manual-rows">
+          ${platforms.map((platform) => checkRowHtml(book, platform)).join("")}
+        </div>
+      </section>
+    `;
   }
 
   function checkRowHtml(book, platform) {
     const result = book.platformResults[platform.id] || blankResult();
+    const actions = manualActions[platform.id] || [["Checked", "checked", "checked", null]];
     return `
       <div class="check-row ${resultClass(result)}" data-platform="${platform.id}">
-        <strong>${escapeHtml(platform.name)}</strong>
-        <a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, book))}">Open ↗</a>
+        <div>
+          <strong>${escapeHtml(platform.name)}</strong>
+          ${platform.note ? `<p class="muted">${escapeHtml(platform.note)}</p>` : ""}
+        </div>
+        <div class="row compact">
+          <a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, book))}">Open</a>
+          <button data-copy-query>Copy query</button>
+        </div>
         <div class="status-buttons">
-          ${statusOptions
-            .map((option) => {
-              const isActive =
-                option.status === "available"
-                  ? result.status === "available" && result.format === option.format
-                  : result.status === option.status;
-              return `<button class="${isActive ? "active" : ""}" data-status="${option.key}">${option.label}</button>`;
-            })
-            .join("")}
+          ${actions.map(([label, key, status, format]) => {
+            const active = result.statusValue === key || (!result.statusValue && result.status === status && result.format === format);
+            return `<button class="${active ? "active" : ""}" data-action="${key}">${label}</button>`;
+          }).join("")}
         </div>
         <input data-note placeholder="optional note" value="${escapeHtml(result.note || "")}" />
       </div>
     `;
   }
 
-  function bindCheckRows(book) {
-    document.querySelectorAll(".check-row").forEach((row) => {
-      const id = row.dataset.platform;
-      row.querySelectorAll("[data-status]").forEach((button) => {
-        button.addEventListener("click", () => {
-          const current = book.platformResults[id] || blankResult();
-          const option = statusOptions.find((item) => item.key === button.dataset.status);
-          const selected = current.format === option.format && current.status === option.status;
-          book.platformResults[id] = selected
-            ? blankResult()
-            : {
-                status: option.status,
-                format: option.format,
-                note: current.note || "",
-                checkedAt: new Date().toISOString(),
-              };
-          book.dateUpdated = new Date().toISOString();
-          saveBooks();
-          renderCheck();
-        });
-      });
-      row.querySelector("[data-note]").addEventListener("input", (event) => {
-        book.platformResults[id] = book.platformResults[id] || blankResult();
-        book.platformResults[id].note = event.target.value;
-        book.platformResults[id].checkedAt = book.platformResults[id].checkedAt || new Date().toISOString();
+  function bindManualPanels() {
+    document.querySelectorAll(".manual-panel").forEach((panel) => {
+      const book = state.books.find((item) => item.id === panel.dataset.book);
+      if (!book) return;
+      panel.querySelector("[data-best-source]")?.addEventListener("change", (event) => {
+        book.bestSource = event.target.value;
         book.dateUpdated = new Date().toISOString();
         saveBooks();
       });
+      panel.querySelector("[data-open-next]")?.addEventListener("click", () => openNextUnchecked(book));
+      panel.querySelector("[data-open-all]")?.addEventListener("click", () => openManyUnchecked(book, manualCheckPlatforms()));
+      panel.querySelector("[data-open-libraries]")?.addEventListener("click", () => openManyUnchecked(book, libraryPlatforms()));
+      panel.querySelectorAll(".check-row").forEach((row) => bindCheckRow(book, row, panel.dataset.context));
     });
+  }
+
+  function bindCheckRow(book, row, context) {
+    const id = row.dataset.platform;
+    row.querySelector("[data-copy-query]")?.addEventListener("click", () => copyText(queryText(book)));
+    row.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const action = (manualActions[id] || []).find((item) => item[1] === button.dataset.action) || ["Checked", "checked", "checked", null];
+        const current = book.platformResults[id] || blankResult();
+        const selected = current.statusValue === action[1];
+        book.platformResults[id] = selected
+          ? blankResult()
+          : { status: action[2], format: action[3], statusValue: action[1], note: current.note || "", checkedAt: new Date().toISOString() };
+        book.dateUpdated = new Date().toISOString();
+        saveBooks();
+        refreshManualContext(context);
+      });
+    });
+    row.querySelector("[data-note]")?.addEventListener("input", (event) => {
+      book.platformResults[id] = book.platformResults[id] || blankResult();
+      book.platformResults[id].note = event.target.value;
+      book.platformResults[id].checkedAt = book.platformResults[id].checkedAt || new Date().toISOString();
+      book.dateUpdated = new Date().toISOString();
+      saveBooks();
+    });
+  }
+
+  function refreshManualContext(context) {
+    if (context === "search") renderTroveResults();
+    if (context === "check") renderCheck();
+    if (context === "saved") renderSaved();
+  }
+
+  function openNextUnchecked(book) {
+    const platform = manualCheckPlatforms().find((item) => book.platformResults[item.id]?.status === null);
+    if (!platform) {
+      notify("All manual platforms are checked", "good");
+      return;
+    }
+    window.open(platformUrl(platform, book), "_blank", "noopener,noreferrer");
+  }
+
+  function openManyUnchecked(book, platforms) {
+    if (!confirm("Open all unchecked platform links? This may open several tabs.")) return;
+    let blocked = false;
+    platforms
+      .filter((platform) => book.platformResults[platform.id]?.status === null)
+      .forEach((platform) => {
+        const opened = window.open(platformUrl(platform, book), "_blank", "noopener,noreferrer");
+        if (opened === null) blocked = true;
+      });
+    if (blocked) notify("Some tabs may have been blocked. Please allow popups or use Open next unchecked.", "warn");
+  }
+
+  function copyText(textToCopy) {
+    navigator.clipboard?.writeText(textToCopy).then(
+      () => notify("Query copied", "good"),
+      () => notify("Copy failed", "warn"),
+    );
   }
 
   function showEditBook(book) {
@@ -650,9 +886,7 @@
           </div>
           <div class="filter-grid">
             <input id="saved-text" placeholder="Search title, author, narrator, tags" value="${escapeHtml(state.savedFilters.text)}" />
-            <select id="format-filter">
-              ${["Any", "Audio", "Ebook"].map((item) => `<option ${state.savedFilters.format === item ? "selected" : ""}>${item}</option>`).join("")}
-            </select>
+            <select id="format-filter">${["Any", "Audio", "Ebook"].map((item) => `<option ${state.savedFilters.format === item ? "selected" : ""}>${item}</option>`).join("")}</select>
             <select id="sort-filter">
               <option value="dateAdded" ${state.savedFilters.sort === "dateAdded" ? "selected" : ""}>Date added</option>
               <option value="title" ${state.savedFilters.sort === "title" ? "selected" : ""}>Title A-Z</option>
@@ -660,18 +894,15 @@
               <option value="dateUpdated" ${state.savedFilters.sort === "dateUpdated" ? "selected" : ""}>Last updated</option>
             </select>
           </div>
-          ${
-            selected
-              ? `<div class="row"><button id="delete-selected" class="danger">Delete selected</button><button id="export-selected">Export selected as JSON</button></div>`
-              : ""
-          }
+          ${selected ? `<div class="row"><button id="delete-selected" class="danger">Delete selected</button><button id="export-selected">Export selected as JSON</button></div>` : ""}
         </section>
-        <section class="cards">
+        <section class="stack">
           ${books.length ? books.map(bookCardHtml).join("") : `<div class="empty">No books saved yet - search for a book to get started</div>`}
         </section>
       </div>
     `;
     bindSavedControls();
+    bindManualPanels();
   }
 
   function filteredBooks() {
@@ -683,11 +914,9 @@
       const hasAvailable = results.some((result) => result.status === "available");
       const hasHold = results.some((result) => result.status === "hold");
       const anyUnchecked = results.some((result) => result.status === null);
-      const allUnavailable = results.length > 0 && results.every((result) => ["unavailable", "skipped"].includes(result.status));
-      const hasFormat =
-        format === "Any" ||
-        results.some((result) => result.format === format.toLowerCase() || result.format === "both");
-      const haystack = [book.title, book.author, book.narrator, book.tags.join(" ")].join(" ").toLowerCase();
+      const allUnavailable = results.length > 0 && results.every((result) => ["unavailable", "skipped", "checked"].includes(result.status));
+      const hasFormat = format === "Any" || results.some((result) => result.format === format.toLowerCase());
+      const haystack = [book.title, book.author, book.narrator, (book.tags || []).join(" ")].join(" ").toLowerCase();
       if (query && !haystack.includes(query.toLowerCase())) return false;
       if (!hasFormat) return false;
       if (quick === "Available now") return hasAvailable;
@@ -709,20 +938,20 @@
     ensurePlatformResults(book);
     const incomplete = manualCheckPlatforms().some((platform) => book.platformResults[platform.id]?.status === null);
     return `
-      <article class="book-card" data-book="${book.id}">
+      <article class="book-card">
         <header>
           <input type="checkbox" data-select="${book.id}" ${state.selectedBooks.has(book.id) ? "checked" : ""} />
           <div>
             <h3>${escapeHtml(book.title)}</h3>
-            <p class="muted">${escapeHtml([book.author, book.narrator, book.series && `${book.series}${book.seriesNumber ? ` #${book.seriesNumber}` : ""}`].filter(Boolean).join(" - "))}</p>
+            <p class="muted">${escapeHtml(bookMeta(book))}</p>
           </div>
+          <button data-open-book="${book.id}">Open</button>
         </header>
-        <div class="chips">${book.tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}${incomplete ? `<span class="status-pill">Incomplete</span>` : ""}</div>
+        <div class="chips">${(book.tags || []).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}${incomplete ? `<span class="status-pill">Incomplete</span>` : ""}</div>
         <div class="status-dots">
-          ${manualCheckPlatforms()
-            .map((platform) => `<span title="${escapeHtml(platform.name)}" class="dot ${resultClass(book.platformResults[platform.id])}"></span>`)
-            .join("")}
+          ${manualCheckPlatforms().map((platform) => `<span title="${escapeHtml(platform.name)}" class="dot ${resultClass(book.platformResults[platform.id])}"></span>`).join("")}
         </div>
+        ${manualPanelHtml(book, "saved")}
       </article>
     `;
   }
@@ -751,12 +980,11 @@
       box.addEventListener("change", () => {
         if (box.checked) state.selectedBooks.add(box.dataset.select);
         else state.selectedBooks.delete(box.dataset.select);
-        renderSaved();
       });
     });
-    document.querySelectorAll(".book-card").forEach((card) => {
-      card.addEventListener("click", () => {
-        state.activeBookId = card.dataset.book;
+    document.querySelectorAll("[data-open-book]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.activeBookId = button.dataset.openBook;
         setView("check");
       });
     });
@@ -778,16 +1006,14 @@
         <section class="panel between">
           <div>
             <h2>Platforms</h2>
-            <p class="muted">Placeholders: {title}, {author}, {isbn}</p>
+            <p class="muted">Defaults now use one Libby entry. Placeholders: {title}, {author}, {isbn}</p>
           </div>
           <div class="row">
             <button id="add-platform">Add platform</button>
             <button id="reset-platforms">Reset to defaults</button>
           </div>
         </section>
-        <section class="platform-table">
-          ${state.platforms.map(platformRowHtml).join("")}
-        </section>
+        <section class="platform-table">${state.platforms.map(platformRowHtml).join("")}</section>
       </div>
     `;
     bindPlatformControls();
@@ -813,7 +1039,7 @@
       `;
     }
     return `
-      <div class="platform-row" data-platform="${platform.id}">
+      <div class="platform-row ${platform.enabled ? "" : "disabled"}" data-platform="${platform.id}">
         <strong>${escapeHtml(platform.name)}</strong>
         <span class="muted">${escapeHtml(platform.searchUrlTemplate)}</span>
         <span class="muted">${escapeHtml(platform.note || platform.isbnUrlTemplate || "-")}</span>
@@ -828,22 +1054,14 @@
   function bindPlatformControls() {
     document.getElementById("add-platform").addEventListener("click", () => {
       const id = `platform-${Date.now()}`;
-      state.platforms.push({
-        id,
-        name: "New platform",
-        searchUrlTemplate: "https://example.com/search?q={title}+{author}",
-        isbnUrlTemplate: "",
-        fallbackUrl: "",
-        enabled: true,
-        note: "",
-      });
+      state.platforms.push({ id, name: "New platform", searchUrlTemplate: "https://example.com/search?q={title}+{author}", isbnUrlTemplate: "", fallbackUrl: "", enabled: true, note: "" });
       state.editingPlatformId = id;
       savePlatforms();
       renderPlatforms();
     });
     document.getElementById("reset-platforms").addEventListener("click", () => {
       if (!confirm("Reset platforms to defaults?")) return;
-      state.platforms = structuredClone(defaultPlatforms);
+      state.platforms = [...clone(defaultPlatforms), ...clone(disabledLegacyPlatforms)];
       savePlatforms();
       renderPlatforms();
     });
@@ -876,14 +1094,11 @@
         <section class="panel stack">
           <h2>Settings</h2>
           <label class="field">
-            <span>Trove API key ${state.settings.troveApiKey ? "(local fallback saved: •••••)" : "(local file fallback only; Vercel uses TROVE_API_KEY env)"}</span>
+            <span>Trove API key ${state.settings.troveApiKey ? "(local fallback saved: hidden)" : "(local file fallback only; Vercel uses TROVE_API_KEY env)"}</span>
             <input id="trove-key" value="${escapeHtml(state.settings.troveApiKey)}" />
           </label>
           <p class="muted">On Vercel, keep the real Trove key in the TROVE_API_KEY environment variable. The browser calls /api/trove, so the deployed key is not exposed in the page.</p>
-          <label class="row">
-            <input id="strip-articles" type="checkbox" ${state.settings.stripArticles ? "checked" : ""} />
-            Strip leading The/A/An from generated searches
-          </label>
+          <label class="row"><input id="strip-articles" type="checkbox" ${state.settings.stripArticles ? "checked" : ""} /> Strip leading The/A/An from generated searches</label>
           <div class="row">
             <button id="save-settings" class="primary">Save settings</button>
             <button id="test-key">Test key</button>
@@ -941,13 +1156,13 @@
     if (!file) return;
     file
       .text()
-      .then((text) => {
-        const data = JSON.parse(text);
+      .then((content) => {
+        const data = JSON.parse(content);
         const books = Array.isArray(data) ? data : data.books;
         if (!Array.isArray(books)) throw new Error("Missing books array");
         const mode = confirm("Replace existing data? Cancel will merge imported books.") ? "replace" : "merge";
-        state.books = mode === "replace" ? books : [...books, ...state.books];
-        if (Array.isArray(data.platforms)) state.platforms = data.platforms;
+        state.books = mode === "replace" ? migrateBooks(books) : [...migrateBooks(books), ...state.books];
+        if (Array.isArray(data.platforms)) state.platforms = migratePlatforms(data.platforms);
         if (data.settings) state.settings = { ...state.settings, ...data.settings };
         saveBooks();
         savePlatforms();
@@ -968,9 +1183,7 @@
     URL.revokeObjectURL(url);
   }
 
-  document.querySelectorAll("[data-view]").forEach((button) => {
-    button.addEventListener("click", () => setView(button.dataset.view));
-  });
+  document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
 
   state.books.forEach(ensurePlatformResults);
   saveBooks();
