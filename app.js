@@ -13,11 +13,11 @@
     {
       id: "libby",
       name: "Libby",
-      searchUrlTemplate: "https://libbyapp.com/",
+      searchUrlTemplate: "https://libbyapp.com/search",
       isbnUrlTemplate: "",
-      fallbackUrl: "https://libbyapp.com/",
+      fallbackUrl: "https://libbyapp.com/search",
       enabled: true,
-      note: "Libby deep links are unreliable. Open Libby and paste the copied query. It will use your logged-in account and added libraries.",
+      note: "Libby deep links are unreliable. Open Libby Search and paste the copied query. It will use your logged-in account and added libraries.",
     },
     {
       id: "hoopla",
@@ -321,7 +321,7 @@
   }
 
   function platformUrl(platform, book) {
-    if (platform.id === "libby") return "https://libbyapp.com/";
+    if (platform.id === "libby") return "https://libbyapp.com/search";
     const hasIsbn = Boolean(book.isbn);
     const template = hasIsbn && platform.isbnUrlTemplate ? platform.isbnUrlTemplate : platform.searchUrlTemplate;
     const fallbackTemplate = platform.id === "goodreads" && !hasIsbn ? "https://www.goodreads.com/search?q={title}+{author}" : template;
@@ -418,7 +418,7 @@
       .map((platform) => {
         if (platform.id === "libby") {
           return `
-            <a class="link-button" target="_blank" rel="noreferrer" href="https://libbyapp.com/">Open Libby</a>
+            <button class="link-button" data-open-libby-search="${escapeHtml(query)}">Open Libby</button>
             <button data-copy-generated-query="${escapeHtml(query)}">Copy query</button>
           `;
         }
@@ -426,7 +426,14 @@
       })
       .join("");
     document.getElementById("libby-search-hint").textContent =
-      "Libby deep links are unreliable. Open Libby and paste the copied query. It will use your logged-in account and added libraries.";
+      "Libby deep links are unreliable. Open Libby Search copies the query, then opens Libby search so you can paste it. It will use your logged-in account and added libraries.";
+    container.querySelectorAll("[data-open-libby-search]").forEach((button) => {
+      button.addEventListener("click", () => {
+        copyText(button.dataset.openLibbySearch, false);
+        notify("Query copied. Paste it into Libby search after it opens.", "good");
+        window.open("https://libbyapp.com/search", "_blank", "noopener,noreferrer");
+      });
+    });
     container.querySelectorAll("[data-copy-generated-query]").forEach((button) => {
       button.addEventListener("click", () => copyText(button.dataset.copyGeneratedQuery));
     });
@@ -1010,14 +1017,18 @@
     platforms
       .filter((platform) => book.platformResults[platform.id]?.status === null)
       .forEach((platform) => {
-        const opened = openPlatform(platform, book);
+        const opened = openPlatform(platform, book, false);
         if (opened === null) blocked = true;
       });
     if (blocked) notify("Some tabs may have been blocked. Please allow popups or use Open next unchecked.", "warn");
   }
 
-  function openPlatform(platform, book) {
+  function openPlatform(platform, book, showMessage = true) {
     if (!platform) return null;
+    if (platform.id === "libby") {
+      copyText(queryText(book), false);
+      if (showMessage) notify("Query copied. Paste it into Libby search after it opens.", "good");
+    }
     return window.open(platformUrl(platform, book), "_blank", "noopener,noreferrer");
   }
 
