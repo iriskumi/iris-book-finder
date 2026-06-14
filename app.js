@@ -13,11 +13,11 @@
     {
       id: "libby",
       name: "Libby",
-      searchUrlTemplate: "https://libbyapp.com/search/query-{title}+{author}/page-1",
+      searchUrlTemplate: "https://libbyapp.com/",
       isbnUrlTemplate: "",
       fallbackUrl: "https://libbyapp.com/",
       enabled: true,
-      note: "Uses the user's logged-in Libby account and all added libraries.",
+      note: "Libby deep links are unreliable. Open Libby and paste the copied query. It will use your logged-in account and added libraries.",
     },
     {
       id: "hoopla",
@@ -189,7 +189,13 @@
     const existing = new Map((Array.isArray(platforms) ? platforms : []).map((platform) => [platform.id, platform]));
     const migrated = defaultPlatforms.map((platform) => {
       const saved = existing.get(platform.id);
-      return { ...platform, ...(saved || {}), enabled: saved ? Boolean(saved.enabled) : platform.enabled };
+      const merged = { ...platform, ...(saved || {}), enabled: saved ? Boolean(saved.enabled) : platform.enabled };
+      if (platform.id === "libby") {
+        merged.searchUrlTemplate = platform.searchUrlTemplate;
+        merged.fallbackUrl = platform.fallbackUrl;
+        merged.note = platform.note;
+      }
+      return merged;
     });
     const legacy = disabledLegacyPlatforms.map((platform) => {
       const saved = existing.get(platform.id);
@@ -315,7 +321,7 @@
   }
 
   function platformUrl(platform, book) {
-    if (platform.id === "libby") return libbySearchUrl(book);
+    if (platform.id === "libby") return "https://libbyapp.com/";
     const hasIsbn = Boolean(book.isbn);
     const template = hasIsbn && platform.isbnUrlTemplate ? platform.isbnUrlTemplate : platform.searchUrlTemplate;
     const fallbackTemplate = platform.id === "goodreads" && !hasIsbn ? "https://www.goodreads.com/search?q={title}+{author}" : template;
@@ -323,11 +329,6 @@
       .replaceAll("{title}", encodePart(stripArticles(book.title)))
       .replaceAll("{author}", encodePart(book.author))
       .replaceAll("{isbn}", encodePart(book.isbn));
-  }
-
-  function libbySearchUrl(book) {
-    const query = encodePart(queryText(book));
-    return query ? `https://libbyapp.com/search/query-${query}/page-1` : "https://libbyapp.com/search";
   }
 
   function queryText(book) {
@@ -380,6 +381,7 @@
           <div id="recent-searches" class="chips"></div>
           <p id="trove-warning" class="muted"></p>
           <div id="generated-search-links" class="chips"></div>
+          <p id="libby-search-hint" class="muted small-warning"></p>
         </section>
         <section id="trove-results" class="stack"></section>
         <section id="book-form-panel" class="panel stack" hidden></section>
@@ -408,12 +410,26 @@
     const query = searchText.trim();
     if (!query) {
       container.innerHTML = "";
+      document.getElementById("libby-search-hint").textContent = "";
       return;
     }
     const draft = { title: query, author: "", isbn: "" };
     container.innerHTML = generatedLinkPlatforms()
-      .map((platform) => `<a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, draft))}">Open ${escapeHtml(linkLabel(platform))}</a>`)
+      .map((platform) => {
+        if (platform.id === "libby") {
+          return `
+            <a class="link-button" target="_blank" rel="noreferrer" href="https://libbyapp.com/">Open Libby</a>
+            <button data-copy-generated-query="${escapeHtml(query)}">Copy query</button>
+          `;
+        }
+        return `<a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, draft))}">Open ${escapeHtml(linkLabel(platform))}</a>`;
+      })
       .join("");
+    document.getElementById("libby-search-hint").textContent =
+      "Libby deep links are unreliable. Open Libby and paste the copied query. It will use your logged-in account and added libraries.";
+    container.querySelectorAll("[data-copy-generated-query]").forEach((button) => {
+      button.addEventListener("click", () => copyText(button.dataset.copyGeneratedQuery));
+    });
   }
 
   function linkLabel(platform) {
@@ -912,7 +928,7 @@
         <div class="row compact">
           ${
             platform.id === "libby"
-              ? `<button data-open-platform>Open</button>`
+              ? `<button data-open-platform>Open Libby</button>`
               : `<a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, book))}">Open</a>`
           }
           <button data-copy-query>Copy query</button>
