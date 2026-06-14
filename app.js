@@ -13,7 +13,7 @@
     {
       id: "libby",
       name: "Libby",
-      searchUrlTemplate: "https://libbyapp.com/search?query={title}+{author}",
+      searchUrlTemplate: "https://libbyapp.com/search",
       isbnUrlTemplate: "",
       fallbackUrl: "https://libbyapp.com/",
       enabled: true,
@@ -284,7 +284,13 @@
   }
 
   function enabledPlatforms() {
-    return state.platforms.filter((platform) => platform.enabled);
+    return state.platforms.filter((platform) => platform.enabled && !oldLibbyIds.has(platform.id));
+  }
+
+  function generatedLinkPlatforms() {
+    return ["libby", "hoopla", "borrowbox", "audible", "goodreads", "trove"]
+      .map((id) => state.platforms.find((platform) => platform.id === id && platform.enabled))
+      .filter(Boolean);
   }
 
   function manualCheckPlatforms() {
@@ -309,6 +315,7 @@
   }
 
   function platformUrl(platform, book) {
+    if (platform.id === "libby") return platform.fallbackUrl || "https://libbyapp.com/";
     const hasIsbn = Boolean(book.isbn);
     const template = hasIsbn && platform.isbnUrlTemplate ? platform.isbnUrlTemplate : platform.searchUrlTemplate;
     const fallbackTemplate = platform.id === "goodreads" && !hasIsbn ? "https://www.goodreads.com/search?q={title}+{author}" : template;
@@ -368,6 +375,7 @@
           <div id="recent-searches" class="chips"></div>
           <p id="trove-warning" class="muted"></p>
           <div id="generated-search-links" class="chips"></div>
+          <p id="libby-search-hint" class="muted small-warning"></p>
         </section>
         <section id="trove-results" class="stack"></section>
         <section id="book-form-panel" class="panel stack" hidden></section>
@@ -396,12 +404,26 @@
     const query = searchText.trim();
     if (!query) {
       container.innerHTML = "";
+      document.getElementById("libby-search-hint").textContent = "";
       return;
     }
     const draft = { title: query, author: "", isbn: "" };
-    container.innerHTML = enabledPlatforms()
-      .map((platform) => `<a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, draft))}">Open ${escapeHtml(linkLabel(platform))}</a>`)
+    document.getElementById("libby-search-hint").textContent = "Libby web search depends on your logged-in libraries. Open Libby copies the query so you can paste it into Libby search.";
+    container.innerHTML = generatedLinkPlatforms()
+      .map((platform) => {
+        if (platform.id === "libby") {
+          return `<button class="link-button" data-open-libby-search="${escapeHtml(query)}">Open Libby</button>`;
+        }
+        return `<a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, draft))}">Open ${escapeHtml(linkLabel(platform))}</a>`;
+      })
       .join("");
+    container.querySelectorAll("[data-open-libby-search]").forEach((button) => {
+      button.addEventListener("click", () => {
+        copyText(button.dataset.openLibbySearch, false);
+        notify("Libby search copied. Paste it into Libby after it opens.", "good");
+        window.open("https://libbyapp.com/search", "_blank", "noopener,noreferrer");
+      });
+    });
   }
 
   function linkLabel(platform) {
@@ -898,7 +920,11 @@
           ${platform.note ? `<p class="muted">${escapeHtml(platform.note)}</p>` : ""}
         </div>
         <div class="row compact">
-          <a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, book))}">Open</a>
+          ${
+            platform.id === "libby"
+              ? `<button data-open-platform>Open</button>`
+              : `<a class="link-button" target="_blank" rel="noreferrer" href="${escapeHtml(platformUrl(platform, book))}">Open</a>`
+          }
           <button data-copy-query>Copy query</button>
         </div>
         <div class="status-buttons">
@@ -931,6 +957,10 @@
   function bindCheckRow(book, row, context) {
     const id = row.dataset.platform;
     row.querySelector("[data-copy-query]")?.addEventListener("click", () => copyText(queryText(book)));
+    row.querySelector("[data-open-platform]")?.addEventListener("click", () => {
+      const platform = state.platforms.find((item) => item.id === id);
+      openPlatform(platform, book);
+    });
     row.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", () => {
         const action = (manualActions[id] || []).find((item) => item[1] === button.dataset.action) || ["Checked", "checked", "checked", null];
@@ -965,7 +995,7 @@
       notify("All manual platforms are checked", "good");
       return;
     }
-    window.open(platformUrl(platform, book), "_blank", "noopener,noreferrer");
+    openPlatform(platform, book);
   }
 
   function openManyUnchecked(book, platforms) {
@@ -974,15 +1004,26 @@
     platforms
       .filter((platform) => book.platformResults[platform.id]?.status === null)
       .forEach((platform) => {
-        const opened = window.open(platformUrl(platform, book), "_blank", "noopener,noreferrer");
+        const opened = openPlatform(platform, book, false);
         if (opened === null) blocked = true;
       });
     if (blocked) notify("Some tabs may have been blocked. Please allow popups or use Open next unchecked.", "warn");
   }
 
-  function copyText(textToCopy) {
+  function openPlatform(platform, book, showLibbyMessage = true) {
+    if (!platform) return null;
+    if (platform?.id === "libby") {
+      copyText(queryText(book), false);
+      if (showLibbyMessage) notify("Libby search copied. Paste it into Libby after it opens.", "good");
+    }
+    return window.open(platformUrl(platform, book), "_blank", "noopener,noreferrer");
+  }
+
+  function copyText(textToCopy, showMessage = true) {
     navigator.clipboard?.writeText(textToCopy).then(
-      () => notify("Query copied", "good"),
+      () => {
+        if (showMessage) notify("Query copied", "good");
+      },
       () => notify("Copy failed", "warn"),
     );
   }
